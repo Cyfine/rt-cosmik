@@ -19,6 +19,7 @@ class Camera(Process):
                  frame_shape: tuple = (720, 1280, 3),
                  cam_fps: int = 40,
                  cam_fourcc: str = "MJPG",
+                 rotate_180: bool = False,
                  logger=None,
                  ):
         
@@ -35,6 +36,7 @@ class Camera(Process):
         self.frame_shape = frame_shape  # (height, width, channels)
         self.cam_fps = cam_fps
         self.cam_fourcc = cam_fourcc
+        self.rotate_180 = bool(rotate_180)
 
         self.logger=logger or LOGGER
 
@@ -81,6 +83,9 @@ class Camera(Process):
                 ret, frame = cap.retrieve()
                 if not ret:
                     continue
+
+                if self.rotate_180:
+                    frame = cv2.rotate(frame, cv2.ROTATE_180)
 
                 # --- 5) timestamp right away
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
@@ -168,4 +173,3 @@ class DisplayConsumer(Process):
         finally:        
             cv2.destroyAllWindows()
             print("Display process terminated.")
-
