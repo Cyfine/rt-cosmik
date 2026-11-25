@@ -74,14 +74,24 @@ class Camera(Process):
                 self.barrier.wait()
 
                 # --- 2) tell the driver to queue the next frame
-                cap.grab()
+                grabbed = cap.grab()
 
                 # --- 3) wait here until everyone has grabbed
                 self.barrier.wait()
 
                 # --- 4) pull the actual image out of the buffer
-                ret, frame = cap.retrieve()
-                if not ret:
+                if not grabbed:
+                    continue
+                try:
+                    ret, frame = cap.retrieve()
+                except cv2.error as error:
+                    self.logger.warning(
+                        "Camera %s dropped an undecodable frame: %s",
+                        self.cam_id,
+                        error,
+                    )
+                    continue
+                if not ret or frame is None or frame.size == 0:
                     continue
 
                 if self.rotate_180:
