@@ -173,8 +173,17 @@ class Settings:
         self.cam_calib_path = str(Path(self.cosmik_path) / "config/cam_params")
         self.output_dir = str(Path(self.cosmik_path) / "output")
         self.SAVE_DIR = str(Path(self.output_dir) / self.no_trial)
-        self.cano_path = str(Path(self.cosmik_path) / "weights/canonical_verts/smplx.npy")
-        self.nlf_path = str(Path(self.cosmik_path) / "weights/nlf/nlf_s_multi_0.2.2.torchscript")
-        self.yolo_path = str(Path(self.cosmik_path) / "weights" / "yolo"
-                             / f"{self.yolo_model}.engine")
+        # Each model path can be overridden through the environment. The detector
+        # defaults to the portable PyTorch weights (.pt), so the environment
+        # needs no TensorRT; set RTCOSMIK_YOLO_PATH to an engine for speed.
+        self.SAVE_DIR = os.environ.get("RTCOSMIK_SAVE_DIR", self.SAVE_DIR)
+        self.cano_path = os.environ.get(
+            "RTCOSMIK_CANO_PATH",
+            str(Path(self.cosmik_path) / "weights/canonical_verts/smplx.npy"))
+        self.nlf_path = os.environ.get(
+            "RTCOSMIK_NLF_PATH",
+            str(Path(self.cosmik_path) / "weights/nlf/nlf_s_multi_0.2.2.torchscript"))
+        self.yolo_path = os.environ.get(
+            "RTCOSMIK_YOLO_PATH",
+            str(Path(self.cosmik_path) / "weights" / "yolo" / f"{self.yolo_model}.pt"))
         self.dt = 1 / self.fs

@@ -193,11 +193,14 @@ class DefaultSettings:
         root = _guess_project_root()
         self.cosmik_path = str(root)
         self.output_dir = str(root / "output")
-        self.SAVE_DIR = str(Path(self.output_dir) / self.no_trial)
+        self.SAVE_DIR = os.environ.get("RTCOSMIK_SAVE_DIR", str(Path(self.output_dir) / self.no_trial))
         self.cam_calib_path = str(root / "config" / "cam_params")
-        self.cano_path = str(root / "weights" / "canonical_verts" / "smplx.npy")
-        self.nlf_path = str(root / "weights" / "nlf" / "nlf_s_multi_0.2.2.torchscript")
-        self.yolo_path = str(root / "weights" / "yolo" / f"{self.yolo_model}.engine")
+        self.cano_path = os.environ.get(
+            "RTCOSMIK_CANO_PATH", str(root / "weights" / "canonical_verts" / "smplx.npy"))
+        self.nlf_path = os.environ.get(
+            "RTCOSMIK_NLF_PATH", str(root / "weights" / "nlf" / "nlf_s_multi_0.2.2.torchscript"))
+        self.yolo_path = os.environ.get(
+            "RTCOSMIK_YOLO_PATH", str(root / "weights" / "yolo" / f"{self.yolo_model}.pt"))
         self.dt = 1 / self.fs
 
 
