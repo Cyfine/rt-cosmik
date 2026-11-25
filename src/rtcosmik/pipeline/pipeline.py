@@ -14,6 +14,7 @@ from rtcosmik.filtering.iir import IIR
 from rtcosmik.human_model.model_utils import scale_human_model, mks_registration, recalibrate_marker_frames_in_joint_space
 from rtcosmik.ik.ik import RT_IK, RT_SWIKA
 from rtcosmik.camera.cam_utils import load_camera_parameters,load_world_transformation
+from rtcosmik.pipeline.result import PipelineResult
 
 import logging
 
@@ -36,6 +37,8 @@ class PipelineProcess(Process):
                  frame_shape: tuple = (720, 1280, 3),
                  num_cameras: int = 2,
                  logger=None,
+                 atomic_result_queue: Queue = None,
+                 compute_human_kinematics: bool = True,
                  ):
         super().__init__()
         # MP
@@ -46,6 +49,15 @@ class PipelineProcess(Process):
         self.num_cameras = num_cameras
         self.stop_event = stop_event
         self.results_queues = results_queues
+        self.atomic_result_queue = atomic_result_queue
+        self.compute_human_kinematics = compute_human_kinematics
+        if self.results_queues is None and self.atomic_result_queue is None:
+            raise ValueError("one pipeline result queue must be provided")
+        if not self.compute_human_kinematics and self.results_queues is not None:
+            raise ValueError(
+                "marker-only execution requires the atomic result queue; "
+                "legacy results_queues are full-kinematics only"
+            )
 
         self.last_frame_counters = [0] * self.num_cameras
         self.frame_counters = frame_counters
@@ -65,6 +77,54 @@ class PipelineProcess(Process):
         self.world_T1_cam=world_T1_cam
         
         self.logger = logger or LOGGER
+
+    def _on_completed_result(
+        self,
+        result,
+        frames,
+        keypoints_list,
+    ):
+        """Allow an integration to consume the exact completed capture.
+
+        The base RT-COSMIK pipeline deliberately has no secondary consumer.
+        Subclasses may override this protected hook, but the hook must return
+        promptly because it runs on the body-perception loop.
+        """
+
+    def _emit_atomic_result(
+        self,
+        *,
+        new_counters,
+        capture_timestamps,
+        mks_dict,
+        q,
+        frames,
+        keypoints_list,
+    ):
+        """Publish one capture-consistent result on the atomic boundary."""
+
+        if self.atomic_result_queue is None:
+            return
+
+        result = PipelineResult(
+            camera_frame_counters=tuple(new_counters),
+            camera_capture_timestamps=tuple(capture_timestamps),
+            markers={
+                name: np.asarray(value, dtype=float).copy()
+                for name, value in mks_dict.items()
+            },
+            q=(
+                None
+                if q is None
+                else np.asarray(q, dtype=float).reshape(-1).copy()
+            ),
+        )
+        self.atomic_result_queue.put(result)
+        self._on_completed_result(
+            result,
+            tuple(frames),
+            tuple(keypoints_list),
+        )
 
     def run(self):
 
@@ -91,6 +151,7 @@ class PipelineProcess(Process):
             while not self.stop_event.is_set():
                     frames = []
                     new_counters = []
+                    capture_timestamps = []
                     for i, (lock, buffer, cam_ts, frame_counter) in enumerate(zip(self.camera_locks, self.camera_buffers, self.timestamp_buffers, self.frame_counters)):
                         with lock:
                             #  Only accept data if this camera has produced a new frame
@@ -105,6 +166,7 @@ class PipelineProcess(Process):
                                     continue
                                 else:
                                     frames.append(frame)
+                                    capture_timestamps.append(timestamp)
                                 new_counters.append(frame_counter.value)
                     
                     if len(frames)!=self.num_cameras:
@@ -159,10 +221,21 @@ class PipelineProcess(Process):
                         filtered_p3d_buffer = np.reshape(filtered_p3d_buffer,(self.settings.N, len(self.settings.marker_names), 3))
 
                         augmented_markers=filtered_p3d_buffer[-1]
+                        mks_dict = dict(zip(self.settings.marker_names, augmented_markers))
+
+                        if not self.compute_human_kinematics:
+                            self._emit_atomic_result(
+                                new_counters=new_counters,
+                                capture_timestamps=capture_timestamps,
+                                mks_dict=mks_dict,
+                                q=None,
+                                frames=frames,
+                                keypoints_list=keypoints_list,
+                            )
+                            self.first_sample = False
+                            continue
 
                         if self.first_sample:
-                            mks_dict = dict(zip(self.settings.marker_names, augmented_markers))
-
                             human = robex.human.HumanLoader(height=self.settings.human_height, weight=self.settings.human_weight, gender=self.settings.human_gender).robot
                             human_model = human.model
 
@@ -216,15 +289,11 @@ class PipelineProcess(Process):
                             self.first_sample = False
 
                         else: # Init phase finished
-                            mks_dict = dict(zip(self.settings.marker_names, augmented_markers))
-                            self.results_queues[0].put((new_counters, mks_dict))
-
                             # IK directly 
                             if self.settings.ik_type == 'sbs':
                                 ik_class._dict_m = mks_dict
                                 q = ik_class.solve_ik_sample_quadprog() 
                                 ik_class._q0 = q
-                                self.results_queues[1].put((new_counters, q))
 
                             elif settings.ik_type == 'mhe':
                                 deque_lstm_dict.append(mks_dict)
@@ -234,8 +303,19 @@ class PipelineProcess(Process):
 
                                 q = pin.neutral(human_model)
                                 q[:] = np.array(x_array[:human_model.nq,-1]).flatten()
-                                self.results_queues[1].put((new_counters, q))
                             else : 
                                 raise ValueError("Invalid ik type, should be sbs (sample by sample) or mhe (moving horizon estimation)")
+
+                            self._emit_atomic_result(
+                                new_counters=new_counters,
+                                capture_timestamps=capture_timestamps,
+                                mks_dict=mks_dict,
+                                q=q,
+                                frames=frames,
+                                keypoints_list=keypoints_list,
+                            )
+                            if self.results_queues is not None:
+                                self.results_queues[0].put((new_counters, mks_dict))
+                                self.results_queues[1].put((new_counters, q))
         finally:        
             self.logger.info("[INFO] Pipeline Process terminated")
