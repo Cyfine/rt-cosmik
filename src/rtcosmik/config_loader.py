@@ -100,8 +100,8 @@ class DefaultSettings:
     # CAMERA
     fs: int = 40
     dt: float = field(init=False)
-    width: int = 1280
-    height: int = 720
+    width: int = 1920
+    height: int = 1080
     fourcc: str = "MJPG"
     cameras: tuple = (0, 2, 4, 6)
 
