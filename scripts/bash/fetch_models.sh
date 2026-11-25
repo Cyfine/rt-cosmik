@@ -34,7 +34,7 @@ download_release_asset () {
 }
 
 # -------- Paths --------
-ROOT_DIR="$(git -C "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" rev-parse --show-toplevel)"
+ROOT_DIR="$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../..")"
 WEIGHTS_DIR="${WEIGHTS_DIR:-${ROOT_DIR}/weights}"
 NLF_DIR="${NLF_DIR:-${WEIGHTS_DIR}/nlf}"
 YOLO_DIR="${YOLO_DIR:-${WEIGHTS_DIR}/yolo}"

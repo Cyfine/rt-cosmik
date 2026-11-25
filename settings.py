@@ -13,7 +13,7 @@ class Settings:
     no_trial = "test"
     SAVE_VID: bool = False
     SAVE_CSV: bool = False
-    SAVE_DIR: str = f"/root/workspace/RT-COSMIK/output/{no_trial}" # abs path to the save folder
+    SAVE_DIR: str = field(init=False)
 
     # CAM PARAMS
     fs: int = 40
@@ -39,8 +39,8 @@ class Settings:
     filter_type: str = "lowpass"
 
     # NLF
-    cano_path: str = "/root/workspace/RT-COSMIK/weights/canonical_verts/smplx.npy"
-    nlf_path: str = "/root/workspace/RT-COSMIK/weights/nlf/nlf_s_multi_0.2.2.torchscript"
+    cano_path: str = field(init=False)
+    nlf_path: str = field(init=False)
     nlf_indices = [             # For SMPLX model
         8421, 5727, 8371, 5677, # pelvis: RASI, LASI, RPSI, LPSI 
         5484, 5489, 5500, 6629, 3878, 7040, 4302, 7105, 4369, 7584, 4848, 7457, 4721, # upper: C7, T11, T6,  RSHO, LSHO, RELB, LELB, RMELB, LMELB, RWRI, LWRI, RMWRI, LMWRI
@@ -51,7 +51,7 @@ class Settings:
     ]
 
     # Yolo detector
-    yolo_path: str = "/root/workspace/RT-COSMIK/weights/yolo/yolov10n.engine"
+    yolo_path: str = field(init=False)
     yolo_conf = 0.2
     yolo_imgsz = 640
 
@@ -103,4 +103,24 @@ class Settings:
         self.cam_calib_path = str(Path(self.cosmik_path) / "config/cam_params")
         self.human_calib_path = str(Path(self.cosmik_path) / "config/human_params")
         self.robot_calib_path = str(Path(self.cosmik_path) / "config/robot_params")
+        # Make model / output paths portable (relative to this repo, not /root/workspace).
+        # Allows overriding individual paths through environment variables.
+        self.SAVE_DIR = os.environ.get(
+            "RTCOSMIK_SAVE_DIR",
+            str(Path(self.cosmik_path) / "output" / self.no_trial),
+        )
+        self.cano_path = os.environ.get(
+            "RTCOSMIK_CANO_PATH",
+            str(Path(self.cosmik_path) / "weights/canonical_verts/smplx.npy"),
+        )
+        self.nlf_path = os.environ.get(
+            "RTCOSMIK_NLF_PATH",
+            str(Path(self.cosmik_path) / "weights/nlf/nlf_s_multi_0.2.2.torchscript"),
+        )
+        # Default to the portable PyTorch weights (.pt) so the env needs no TensorRT.
+        # Set RTCOSMIK_YOLO_PATH to a prebuilt .engine for maximum throughput.
+        self.yolo_path = os.environ.get(
+            "RTCOSMIK_YOLO_PATH",
+            str(Path(self.cosmik_path) / "weights/yolo/yolov10n.pt"),
+        )
         self.dt = 1 / self.fs
