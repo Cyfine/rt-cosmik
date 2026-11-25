@@ -16,6 +16,7 @@ from rtcosmik.viewer.async_display import AsyncDisplay
 from rtcosmik.viewer.viewer import Viewer
 from rtcosmik.camera.cam_utils import load_camera_parameters,load_world_transformation
 from rtcosmik.model_weights import resolve_detector_engine
+from rtcosmik.pipeline.result import PipelineResult
 
 import logging
 
@@ -47,6 +48,13 @@ class PipelineProcess(Process):
             replayed recordings.
         report_every: seconds between two timing reports.
         logger: optional logger.
+        atomic_result_queue: optional queue receiving one
+            :class:`~rtcosmik.pipeline.result.PipelineResult` per completed
+            capture: frame counters, capture timestamps, filtered markers and
+            the matching joint configuration (None in marker-only mode).
+        compute_human_kinematics: False stops after the filtered markers: no
+            model calibration, IK, recording or viewer. Requires
+            ``atomic_result_queue``, the only output in that mode.
     """
     def __init__(self, 
                  settings,
@@ -67,8 +75,15 @@ class PipelineProcess(Process):
                  calibrated_event=None,
                  report_every: float = 2.0,
                  logger=None,
+                 atomic_result_queue: Queue = None,
+                 compute_human_kinematics: bool = True,
                  ):
         super().__init__()
+        if not compute_human_kinematics and atomic_result_queue is None:
+            raise ValueError(
+                "marker-only execution requires the atomic result queue")
+        self.atomic_result_queue = atomic_result_queue
+        self.compute_human_kinematics = compute_human_kinematics
         # MP
         self.camera_buffers = camera_buffers
         self.camera_locks = camera_locks
@@ -97,6 +112,28 @@ class PipelineProcess(Process):
         self.world_T1_cam=world_T1_cam
         
         self.logger = logger or LOGGER
+
+    def _on_completed_result(self, result, frames, keypoints_list):
+        """Allow an integration to consume the exact completed capture.
+
+        The base pipeline has no secondary consumer. Subclasses may override
+        this hook; it runs on the pipeline loop, so it must return promptly.
+        """
+
+    def _emit_atomic_result(self, *, new_counters, capture_timestamps, mks_dict,
+                            q, frames, keypoints_list):
+        """Publish one capture-consistent result on the atomic boundary."""
+        if self.atomic_result_queue is None:
+            return
+        result = PipelineResult(
+            camera_frame_counters=tuple(new_counters),
+            camera_capture_timestamps=tuple(capture_timestamps),
+            markers={name: np.asarray(value, dtype=float).copy()
+                     for name, value in mks_dict.items()},
+            q=None if q is None else np.asarray(q, dtype=float).reshape(-1).copy(),
+        )
+        self.atomic_result_queue.put(result)
+        self._on_completed_result(result, tuple(frames), tuple(keypoints_list))
 
     def _log_live(self, recent, window_s):
         """One line per reporting window, while the session runs."""
@@ -136,8 +173,10 @@ class PipelineProcess(Process):
     def run(self):
         """Process frames until ``stop_event`` is set, then log the timing summary."""
         height, weight, gender = self.subject or (None, None, None)
-        self.solver = HumanSolver(self.settings, gender=gender, height=height,
-                                  weight=weight, logger=self.logger)
+        kinematics = self.compute_human_kinematics
+        self.solver = (HumanSolver(self.settings, gender=gender, height=height,
+                                   weight=weight, logger=self.logger)
+                       if kinematics else None)
 
         # Recording and display both live here now, with the data. The display
         # is a thread that drops frames when it falls behind, so a slow viewer
@@ -154,11 +193,14 @@ class PipelineProcess(Process):
         recent = {"loop": [], "pose": [], "ik": [], "skip": []}
         t_report = time.perf_counter()
 
-        recorder = Recorder(self.settings, self.num_cameras,
-                            saving_flag=self.saving_flag, logger=self.logger).start()
-        display = AsyncDisplay(logger=self.logger)
-        display.__enter__()
-        viewer = None
+        # Marker-only mode records nothing and draws nothing: its consumer
+        # owns both.
+        recorder = display = viewer = None
+        if kinematics:
+            recorder = Recorder(self.settings, self.num_cameras,
+                                saving_flag=self.saving_flag, logger=self.logger).start()
+            display = AsyncDisplay(logger=self.logger)
+            display.__enter__()
 
         est = NLFEstimator(
             yolo_path=resolve_detector_engine(self.settings.yolo_path, self.num_cameras),
@@ -179,6 +221,7 @@ class PipelineProcess(Process):
                     t_loop0 = time.perf_counter()
                     frames = []
                     new_counters = []
+                    capture_timestamps = []
                     for i, (lock, buffer, cam_ts, frame_counter) in enumerate(zip(self.camera_locks, self.camera_buffers, self.timestamp_buffers, self.frame_counters)):
                         with lock:
                             #  Only accept data if this camera has produced a new frame
@@ -193,6 +236,7 @@ class PipelineProcess(Process):
                                     continue
                                 else:
                                     frames.append(frame)
+                                    capture_timestamps.append(timestamp)
                                 new_counters.append(frame_counter.value)
                     
                     if len(frames)!=self.num_cameras:
@@ -224,6 +268,14 @@ class PipelineProcess(Process):
 
                     mks_dict = dict(zip(self.settings.marker_names, augmented_markers))
 
+                    if not kinematics:
+                        self._emit_atomic_result(
+                            new_counters=new_counters,
+                            capture_timestamps=capture_timestamps,
+                            mks_dict=mks_dict, q=None, frames=frames,
+                            keypoints_list=views.keypoints)
+                        continue
+
                     if self.first_sample:
                         q = self.solver.calibrate(mks_dict)
                         self.first_sample = False
@@ -242,6 +294,11 @@ class PipelineProcess(Process):
                         t_ik0 = time.perf_counter()
                         q = self.solver.step(mks_dict)
                         stage_ms["ik"].append((time.perf_counter()-t_ik0)*1e3)
+                        self._emit_atomic_result(
+                            new_counters=new_counters,
+                            capture_timestamps=capture_timestamps,
+                            mks_dict=mks_dict, q=q, frames=frames,
+                            keypoints_list=views.keypoints)
 
                         t_rec0 = time.perf_counter()
                         recorder.record(new_counters, mks_dict, q)
@@ -273,6 +330,8 @@ class PipelineProcess(Process):
 
         finally:
             self._log_timing(stage_ms, skipped)
-            display.close()
-            recorder.close()
+            if display is not None:
+                display.close()
+            if recorder is not None:
+                recorder.close()
             self.logger.info("[INFO] Pipeline Process terminated")
