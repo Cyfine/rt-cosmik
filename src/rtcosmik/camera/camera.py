@@ -21,6 +21,7 @@ class Camera(Process):
                  cam_fourcc: str = "MJPG",
                  rotate_180: bool = False,
                  logger=None,
+                 capture_buffer_count: int = 1,
                  ):
         
         super().__init__()
@@ -37,6 +38,7 @@ class Camera(Process):
         self.cam_fps = cam_fps
         self.cam_fourcc = cam_fourcc
         self.rotate_180 = bool(rotate_180)
+        self.capture_buffer_count = capture_buffer_count
 
         self.logger=logger or LOGGER
 
@@ -58,7 +60,7 @@ class Camera(Process):
         if self.cam_fps:
             cap.set(cv2.CAP_PROP_FPS, self.cam_fps)
 
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, self.capture_buffer_count)
 
         # reshape shared buffer once
         arr          = np.frombuffer(self.shared_buffer, dtype=np.uint8)
