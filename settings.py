@@ -77,7 +77,7 @@ class Settings:
 
     ### FILTER PARAMS ###
     order: int = 4
-    cutoff_freq: float = 10
+    cutoff_freq: float = 5  # NERO: kept at the 5 Hz the integration has always specified
     filter_type: str = "lowpass"
 
     ### NLF ###

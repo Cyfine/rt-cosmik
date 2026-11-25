@@ -118,7 +118,7 @@ class DefaultSettings:
 
     # FILTER
     order: int = 4
-    cutoff_freq: float = 10
+    cutoff_freq: float = 5
     filter_type: str = "lowpass"
 
     # MODELS
